@@ -1,0 +1,1 @@
+from src.models.simple_vae import SimpleVAEWeatherGenModel

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.setuptools]
+packages = ["gorq_ml"]
+
+[tool.hatch.version]
+path = "gorq_ml/__init__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build]
+include = [
+    "gorq_ml/*",
+]
+
+[project]
+name = "gorq_ml"
+description = "Gorq's ML library and projects"
+readme = "README.md"
+dynamic = ["version"]
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+    "numpy",
+    "tqdm",
+]
+authors = [
+    { name = "Matej Murín", email = "matejmurin01@gmail.com" },
+]
+keywords = ["gorq-ml"]
+
+[project.optional-dependencies]
+
+[project.urls]
+Homepage = "https://github.com/murinmat/gorq-ml"
+Issues = "https://github.com/murinmat/gorq-ml/issues"
