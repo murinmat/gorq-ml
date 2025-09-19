@@ -1,7 +1,5 @@
 import torch
 import numpy as np
-import torch.distributed as dist
-import matplotlib.pyplot as plt
 from torch import nn
 from typing import Tuple
 from clearml.logger import Logger
@@ -88,7 +86,7 @@ class SimpleVAEFaceGenModel(BaseModel):
         latent_dim: int,
         final_sigmoid: bool,
         kl_warmup_steps: int,
-        log_samples_interval: int,
+        log_samples_interval: int | None = None,
         **kwargs
     ):
         if 'ignore_hparams' in kwargs:
@@ -106,27 +104,32 @@ class SimpleVAEFaceGenModel(BaseModel):
             final_sigmoid=final_sigmoid,
         )
 
+    def _log_sample_images(self):
+        is_training = self.training
+        self.train(False)
+        with torch.no_grad():
+            out = self.model.decode(self.val_tensor.to(self.device))
+            for idx, o in enumerate(out):
+                img_data: torch.Tensor = o
+                img_data[img_data < 0.01] = torch.nan
+                to_plot = img_data.permute(1, 2, 0).cpu().detach().numpy()
+                Logger.current_logger().report_image(
+                    title=f'generated_output',
+                    series=f'{idx}',
+                    iteration=self.global_step,
+                    image=to_plot,
+                    max_image_history=-1,
+                )
+
+        self.train(is_training)
+
     def on_train_batch_end(self, *args, **kwargs) -> None:
-        is_rank_0 = not dist.is_initialized() or dist.get_rank() == 0
-        if is_rank_0 and self.global_step % self.hparams['log_samples_interval'] == 0:
-            is_training = self.training
-            self.train(False)
-            with torch.no_grad():
-                out = self.model.decode(self.val_tensor.to(self.device))
-                for idx, o in enumerate(out):
-                    img_data: torch.Tensor = o
+        log_interval = self.hparams.get('log_samples_interval', None)
+        if log_interval is not None and self.global_step % log_interval == 0:
+            self._log_sample_images()
 
-                    img_data[img_data < 0.01] = torch.nan
-                    to_plot = img_data.permute(1, 2, 0).cpu().detach().numpy()
-                    Logger.current_logger().report_image(
-                        title=f'generated_output',
-                        series=f'{idx}',
-                        iteration=self.global_step,
-                        image=to_plot,
-                        max_image_history=-1,
-                    )
-
-            self.train(is_training)
+    def on_train_epoch_end(self) -> None:
+        self._log_sample_images()
 
     def compute_losses(self, batch: torch.Tensor) -> Tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
         kl_weight = 1 if self.global_step >= len(self.kl_weight) else self.kl_weight[self.global_step]
