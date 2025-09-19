@@ -18,8 +18,3 @@ def mae_vae_loss(y_hat: torch.Tensor, y: torch.Tensor, mu: torch.Tensor, logvar:
         kl_loss=kl_loss,
         loss=recon_loss + kl_loss*kl_loss_w
     )
-    # return VAELoss(
-    #     recon_loss=recon_loss,
-    #     kl_loss=recon_loss,
-    #     loss=recon_loss
-    # )

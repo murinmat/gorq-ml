@@ -90,6 +90,7 @@ def dict_product(d):
 def construct_configs(base: dict, optional: dict) -> Tuple[list[dict], list[int], list[int]]:
     all_configs = []
 
+    merged_opts = []
     for config in optional['configs']:
         expanded_options = dict_product(config)
         for option in expanded_options:
@@ -100,6 +101,7 @@ def construct_configs(base: dict, optional: dict) -> Tuple[list[dict], list[int]
                         merge(d1[k], v)
                     else:
                         d1[k] = v
+                        merged_opts.append(f'{k}={v}')
             merge(new_config, option)
             new_config['config_hash'] = hashlib.sha256(str(new_config).encode()).hexdigest()
             all_configs.append(new_config)
@@ -107,13 +109,14 @@ def construct_configs(base: dict, optional: dict) -> Tuple[list[dict], list[int]
     return all_configs, optional['num_epochs'], optional['reduced_population_sizes']
 
 
-def setup_training(prepared_config: TrainingConfig) -> PreparedTraining:
+def setup_training(prepared_config: TrainingConfig, search_iteration: int) -> PreparedTraining:
     print('='*40)
     print(f'Setting up with: {str(prepared_config.config)}')
     config = prepared_config.config
     base_name = config['base_task_name']
     task_name = f'{base_name}_iteration={prepared_config.successive_halving_iteration}_{config["config_hash"]}'
     config['task']['task_name'] = task_name
+    config['search_iteration'] = search_iteration
     train_images, val_images = get_train_val_data()
     dl = data.FacesDataModule(
         train_images=train_images,
@@ -143,15 +146,29 @@ def setup_training(prepared_config: TrainingConfig) -> PreparedTraining:
         deterministic=True,
     )
 
-    task = Task.init(
-        **config['task'],
+    existing_tasks: list[Task] = Task.get_tasks(
+        project_name=config['task']['project_name'],
+        task_name=config['task']['task_name']
     )
-    config = task.connect(config)
+    if (
+        len(existing_tasks) > 0 and
+        existing_tasks[-1].status == Task.TaskStatusEnum.completed and
+        existing_tasks[-1].get_configuration_object_as_dict('config').get('search_iteration', search_iteration) == search_iteration 
+    ):
+        task = existing_tasks[-1]
+        task_existed = True
+    else:
+        task = Task.init(
+            **config['task'],
+        )
+        task_existed = False
+        config = task.connect_configuration(config, name='config')
     return PreparedTraining(
         model=model,
         dl=dl,
         task=task,
         trainer=trainer,
+        task_existed=task_existed
     )
 
 def main() -> None:

@@ -32,8 +32,6 @@ trainer:
   precision: 16-mixed
   profiler: simple
   check_val_every_n_epoch: 1
-  gradient_clip_val: 0.5
-  gradient_clip_algorithm: value
 
 model_name: SimpleVAEFaceGenModel
 model_kwargs:

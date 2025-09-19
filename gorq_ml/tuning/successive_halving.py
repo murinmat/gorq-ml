@@ -28,6 +28,7 @@ class PreparedTraining:
     dl: L.LightningDataModule
     task: Task
     trainer: L.Trainer
+    task_existed: bool
 
 
 def train_model(conf: PreparedTraining, ckpt_path: str | None):
@@ -43,7 +44,7 @@ def search(
         possible_configs: list[dict],
         reduced_population_sizes: list[int],
         num_epochs: list[int],
-        get_training_setup_function: Callable[[TrainingConfig], PreparedTraining],
+        get_training_setup_function: Callable[[TrainingConfig, int], PreparedTraining],
         metric_series: str,
         metric_name: str,
         mode: Literal['min', 'max'],
@@ -66,25 +67,29 @@ def search(
             desc='Iterating through the current possible configs',
             leave=False,
         ):
+            config['trainer']['max_epochs'] = current_epochs
             current_config = TrainingConfig(
                 successive_halving_iteration=0,
                 config=config,
             )
-            prepared_training = get_training_setup_function(current_config)
+            prepared_training = get_training_setup_function(current_config, current_idx)
             prepared_training.trainer.fit_loop.max_epochs = total_epochs
             logger.info(f'Training: {current_config.config}')
 
-            try:
-                prepared_training.trainer.fit(
-                    prepared_training.model,
-                    prepared_training.dl,
-                    ckpt_path=past_checkpoints.get(str(config))
-                )
-            except Exception as e:
-                logger.warning(f'Training failed with e: {e}, continuing...')
-                prepared_training.task.close()
-                continue
-            time.sleep(10)
+            if prepared_training.task_existed:
+                logger.warning(f'Task with config {config} already existed, skipping training...')
+            else:
+                try:
+                    prepared_training.trainer.fit(
+                        prepared_training.model,
+                        prepared_training.dl,
+                        ckpt_path=past_checkpoints.get(str(config))
+                    )
+                except Exception as e:
+                    logger.warning(f'Training failed with e: {e}, continuing...')
+                    prepared_training.task.close()
+                    continue
+                time.sleep(5)
             latest_metrics = prepared_training.task.get_last_scalar_metrics()
             latest_metric = latest_metrics[metric_name][metric_series]['last']
             current_results.append((config, latest_metric))
