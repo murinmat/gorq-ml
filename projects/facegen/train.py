@@ -37,11 +37,10 @@ parser.add_argument(
     help='Base name of the experiments to run.'
 )
 parser.add_argument(
-    '--ckpt',
+    '--devices',
     type=str,
-    required=False,
-    help='Path to a checkpoint to restart the training from.',
-    default=None,
+    required=True,
+    help='A list of devices to use',
 )
 
 def update_dict(d: dict, expr: str) -> None:
@@ -106,7 +105,7 @@ def construct_configs(base: dict, optional: dict) -> Tuple[list[dict], list[int]
             new_config['config_hash'] = hashlib.sha256(str(new_config).encode()).hexdigest()
             all_configs.append(new_config)
 
-    return all_configs, optional['num_epochs'], optional['reduced_population_sizes']
+    return all_configs, optional['num_iterations'], optional['reduced_population_sizes']
 
 
 def setup_training(prepared_config: TrainingConfig, search_iteration: int) -> PreparedTraining:
@@ -129,11 +128,7 @@ def setup_training(prepared_config: TrainingConfig, search_iteration: int) -> Pr
     logger.info(f'Val samples: {len(dl.val_dataloader().dataset)}') # type: ignore
     model = getattr(models, config['model_name'])(
         **config['model_kwargs'],
-        total_training_steps=(
-            (len(dl.train_dataloader().dataset) // config['dataloader']['batch_size'] + 1) # type: ignore
-            * config['final_max_epochs']
-            / config['trainer']['devices']
-        )
+        total_training_steps=config['total_iterations'],
     )
 
     config['checkpoint']['dirpath'] = os.path.join(config['checkpoint']['dirpath'], task_name)
@@ -146,29 +141,11 @@ def setup_training(prepared_config: TrainingConfig, search_iteration: int) -> Pr
         deterministic=True,
     )
 
-    existing_tasks: list[Task] = Task.get_tasks(
-        project_name=config['task']['project_name'],
-        task_name=config['task']['task_name']
-    )
-    if (
-        len(existing_tasks) > 0 and
-        existing_tasks[-1].status == Task.TaskStatusEnum.completed and
-        existing_tasks[-1].get_configuration_object_as_dict('config').get('search_iteration', search_iteration) == search_iteration 
-    ):
-        task = existing_tasks[-1]
-        task_existed = True
-    else:
-        task = Task.init(
-            **config['task'],
-        )
-        task_existed = False
-        config = task.connect_configuration(config, name='config')
     return PreparedTraining(
         model=model,
         dl=dl,
-        task=task,
         trainer=trainer,
-        task_existed=task_existed
+        config=config,
     )
 
 def main() -> None:
@@ -179,15 +156,16 @@ def main() -> None:
     base_config['base_task_name'] = args.name
     with open(args.config_options, 'r') as f:
         config_options = yaml.safe_load(f)
-    all_configs, num_epochs, reduced_pop_sizes = construct_configs(base_config, config_options)
+    all_configs, num_iterations, reduced_pop_sizes = construct_configs(base_config, config_options)
     search(
         possible_configs=all_configs,
         reduced_population_sizes=reduced_pop_sizes,
-        num_epochs=num_epochs,
+        num_iterations=num_iterations,
         get_training_setup_function=setup_training,
         metric_name='loss',
         metric_series='val',
-        mode='min'
+        mode='min',
+        devices=[int(x) for x in args.devices.split(',')],
     )
 
 

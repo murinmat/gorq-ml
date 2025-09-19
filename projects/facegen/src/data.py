@@ -9,14 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import Compose, RandomHorizontalFlip, Resize
 import lightning as L
 
-TRAIN_RADARS = [
-    'KDMX',
-    'KUEX'
-]
-VAL_RADARS = [
-    'KGLD'
-]
-BASE_PATH = '/data/datasets/celeba/images/'
+BASE_PATH = '/home/murinmat/img_align_celeba/img_align_celeba'
 BASE_AUGMENTATIONS = [
     Resize((256, 256))
 ]

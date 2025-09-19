@@ -1,14 +1,8 @@
 task:
   task_type: training
   project_name: FaceGen
-  auto_connect_frameworks:
-    detect_repository: false
 
 callbacks:
-  EarlyStopping:
-    mode: min
-    monitor: loss/val
-    patience: 3
   LearningRateMonitor:
     logging_interval: step
 
@@ -18,7 +12,7 @@ checkpoint:
   filename: best_loss_{loss/val:.5f}_{step}
   monitor: loss/val
   save_last: true
-  save_top_k: 3
+  save_top_k: 1
   verbose: true
 
 dataloader:
@@ -30,17 +24,12 @@ trainer:
   log_every_n_steps: 50
   num_sanity_val_steps: 0
   precision: 16-mixed
-  profiler: simple
   check_val_every_n_epoch: 1
 
-model_name: SimpleVAEFaceGenModel
 model_kwargs:
   nc: 3
   betas: [0.9, 0.999]
   final_sigmoid: true
   img_size: 256
   kl_warmup_steps: 2000
-  log_samples_interval: 2000
   lr_warmup_steps: 2000
-
-final_max_epochs: 14
