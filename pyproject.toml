@@ -26,6 +26,8 @@ dependencies = [
     "torch",
     "numpy",
     "tqdm",
+    "mlflow",
+    "kaggle",
 ]
 authors = [
     { name = "Matej Murín", email = "matejmurin01@gmail.com" },
