@@ -1,13 +1,17 @@
 import lightning as L
-import time
 import copy
+import hashlib
+import asyncio
 from loguru import logger
 from tqdm.auto import tqdm
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Literal
-import multiprocessing as mp
 from clearml import Task
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+
+from gorq_ml.tuning.utils import ConfigCombinations
 
 
 @dataclass(kw_only=True)
@@ -31,23 +35,14 @@ class PreparedTraining:
     config: dict
 
 
-def train_model(conf: PreparedTraining, ckpt_path: str | None):
-    conf.trainer.fit(
-        conf.model,
-        conf.dl,
-        ckpt_path=ckpt_path
-    )
-
-
-def run_call(
+def _run_call_executor(
     *,
     config: dict,
     current_iteration: int,
     prepared_training: PreparedTraining,
-    past_checkpoints: dict,
-    queue: mp.Queue,
     original_config: dict,
-) -> None:
+    resume: bool,
+) -> dict:
     logger.warning(f'Starting a worker')
 
     existing_tasks: list[Task] = Task.get_tasks(
@@ -68,112 +63,156 @@ def run_call(
     else:
         task = Task.init(
             **config['task'],
+            reuse_last_task_id=resume,
+            continue_last_task=resume,
         )
         task_existed = False
         config = task.connect_configuration(config, name='config')
 
     if task_existed:
         logger.warning(f'Task with config {config} already existed, skipping training...')
+        succeeded = True
     else:
         try:
             prepared_training.trainer.fit(
                 prepared_training.model,
                 prepared_training.dl,
-                ckpt_path=past_checkpoints.get(str(config))
+                ckpt_path='last' if resume else None
             )
             prepared_training.trainer.validate(
                 prepared_training.model,
                 dataloaders=prepared_training.dl.val_dataloader()
             )
+            succeeded = True
         except Exception as e:
             logger.warning(f'Training failed with e: {e}, continuing...')
+            succeeded = False
     task.close()
-    queue.put({
+    logger.critical('Run ended')
+    return {
         'task_id': task.id,
         'config': original_config,
-    })
+        'succeeded': succeeded,
+    }
 
 
-def search(
-        *,
-        possible_configs: list[dict],
-        reduced_population_sizes: list[int],
-        num_iterations: list[int],
-        get_training_setup_function: Callable[[TrainingConfig, int], PreparedTraining],
-        metric_series: str,
-        metric_name: str,
-        mode: Literal['min', 'max'],
-        devices: list[int],
-) -> None:
-    mp.set_start_method('spawn', force=True)
-    if (len(reduced_population_sizes) + 1) != len(num_iterations):
-        raise ValueError(f'Length of population sizes must be one less than the length of number of iterations.')
+def _get_next_population(
+    *,
+    current_population: list[dict],
+    devices: list[int],
+    current_iteration: int,
+    executor: ProcessPoolExecutor,
+    get_training_setup_function: Callable[[TrainingConfig, int, str], PreparedTraining],
+    metric_series: str,
+    metric_name: str,
+    mode: Literal['min', 'max'],
+    population_size: int,
+    num_iterations_todo: int,
+    num_iterations_total: int,
+) -> list[dict]:
+    current_results = []
+    futures = []
+    device_queue = asyncio.Queue()
 
-    current_population = possible_configs
-    past_checkpoints = {}
-    total_iterations = 0
-    device_processes = {}
-    for current_idx, current_iterations in tqdm(
-        enumerate(num_iterations),
-        total=len(num_iterations),
-        desc='Iterating through the search space'
-    ):
-        total_iterations += current_iterations
-        current_results = []
-        results_queue = mp.Queue()
-        for config in tqdm(
-            current_population,
-            desc='Iterating through the current possible configs',
-            leave=False,
-        ):
-            original_config = copy.deepcopy(config)
-            config['trainer']['max_steps'] = total_iterations
-            config['total_iterations'] = sum(num_iterations)
-            current_process = None
-            prepared_training = None
-            while current_process is None:
-                for dev_idx in devices:
-                    if dev_idx not in device_processes:
-                        config['trainer']['devices'] = [dev_idx]
-                        current_config = TrainingConfig(
-                            successive_halving_iteration=0,
-                            config=config,
-                        )
-                        prepared_training = get_training_setup_function(current_config, current_idx)
-                        current_process = mp.Process(
-                            target=run_call,
-                            kwargs={
-                                'config': config,
-                                'current_iteration': current_idx,
-                                'prepared_training': prepared_training,
-                                'past_checkpoints': past_checkpoints,
-                                'queue': results_queue,
-                                'original_config': original_config,
-                            },
-                        )
-                        current_process.start()
-                        device_processes[dev_idx] = current_process
-                        break
-                    elif not device_processes[dev_idx].is_alive():
-                        device_processes[dev_idx].join()
-                        del device_processes[dev_idx]
-                else:
-                    logger.warning(f'All devices are busy now, waiting...')
-                    time.sleep(1)
+    for dev in devices:
+        device_queue.put_nowait(dev)
 
-        for dev_idx, process in device_processes.items():
-            if process is not None:
-                process.join()
-        finished_trainings = []
-        while not results_queue.empty():
-            finished_trainings.append(results_queue.get())
+    async def submit_config(config):
+        dev_idx = await device_queue.get()
+        try:
+            altered_config = copy.deepcopy(config)
+            altered_config['trainer']['max_steps'] = num_iterations_todo
+            altered_config['total_iterations'] = num_iterations_total
+            altered_config['trainer']['devices'] = [dev_idx]
 
-        for task_id, config in finished_trainings:
+            current_config = TrainingConfig(
+                successive_halving_iteration=0,
+                config=altered_config,
+            )
+            prepared_training = get_training_setup_function(
+                current_config,
+                current_iteration,
+                hashlib.sha256(str(config).encode()).hexdigest()
+            )
+            fut = executor.submit(
+                _run_call_executor,
+                config=altered_config,
+                current_iteration=current_iteration,
+                prepared_training=prepared_training,
+                original_config=config,
+                resume=current_iteration != 0
+            )
+            return fut
+        finally:
+            device_queue.put_nowait(dev_idx)
+
+    async def run_all():
+        tasks = [submit_config(cfg) for cfg in current_population]
+        return await asyncio.gather(*tasks)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    futures = loop.run_until_complete(run_all())
+    loop.close()
+
+    for fut in as_completed(futures):
+        result = fut.result()
+        task_id, config, succeeded = result['task_id'], result['config'], result['succeeded']
+        if not succeeded:
+            continue
+        try:
             task: Task = Task.get_task(task_id)
             latest_metrics = task.get_last_scalar_metrics()
             latest_metric = latest_metrics[metric_name][metric_series]['last']
             current_results.append((config, latest_metric))
-            past_checkpoints[str(config)] = list(task.models.values())[-1]
+        except Exception:
+            logger.warning(f'Failed to retrieve result from a run, skipping...')
 
-        sorted_results = sorted(current_results, key=lambda x: x[1], reverse=mode=='max')
-        current_population = [x[0] for x in sorted_results[:reduced_population_sizes[current_idx]]]
+    for _ in range(5):
+        logger.critical('='*20)
+    logger.critical('Ended entire pop iteration.')
+
+    sorted_results = sorted(
+        current_results,
+        key=lambda x: x[1],
+        reverse=(mode == 'max')
+    )
+    return [x[0] for x in sorted_results[:population_size]]
+
+
+def search(
+    *,
+    possible_configs: ConfigCombinations,
+    get_training_setup_function: Callable[[TrainingConfig, int, str], PreparedTraining],
+    metric_series: str,
+    metric_name: str,
+    mode: Literal['min', 'max'],
+    devices: list[int],
+) -> None:
+
+    if (len(possible_configs.reduced_population_sizes) + 1) != len(possible_configs.num_iterations):
+        raise ValueError("Length of population sizes must be one less than the length of number of iterations.")
+
+    current_population = possible_configs.configs
+    total_iterations = 0
+
+    with ProcessPoolExecutor(max_workers=len(devices)) as executor:
+        for current_iteration_idx, current_num_iterations in tqdm(
+            enumerate(possible_configs.num_iterations),
+            total=len(possible_configs.num_iterations),
+            desc='Iterating through the search space',
+        ):
+            total_iterations += current_num_iterations
+            current_population = _get_next_population(
+                current_population=current_population,
+                devices=devices,
+                current_iteration=current_iteration_idx,
+                executor=executor,
+                get_training_setup_function=get_training_setup_function,
+                metric_series=metric_series,
+                metric_name=metric_name,
+                mode=mode,
+                population_size=possible_configs.reduced_population_sizes[current_iteration_idx],
+                num_iterations_todo=current_num_iterations,
+                num_iterations_total=sum(possible_configs.num_iterations),
+            )

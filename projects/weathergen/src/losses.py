@@ -12,7 +12,7 @@ class VAELoss:
 
 def mae_vae_loss(y_hat: torch.Tensor, y: torch.Tensor, mu: torch.Tensor, logvar: torch.Tensor, kl_loss_w: float = 1.) -> VAELoss:
     recon_loss = F.l1_loss(y_hat, y)
-    kl_loss = torch.mean(-0.5 * (1 + logvar - mu.pow(2) - logvar.exp()))
+    kl_loss = (-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)).mean()
     return VAELoss(
         recon_loss=recon_loss,
         kl_loss=kl_loss,

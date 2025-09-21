@@ -6,12 +6,20 @@ from torch import nn
 from typing import Tuple
 from clearml.logger import Logger
 
-from src.models._base import WeatherGenModel
+from src.models._base import BaseModel
 from src.losses import mae_vae_loss
 
 
 class SimpleVAEModel(nn.Module):
-    def __init__(self, img_size: int, nc: int, dims: list[int], latent_dim: int):
+    def __init__(
+            self,
+            *,
+            img_size: int,
+            nc: int,
+            dims: list[int],
+            latent_dim: int,
+            final_sigmoid: bool,
+    ) -> None:
         super().__init__()
         # Encoder
         all_dims = [nc] + dims
@@ -46,7 +54,7 @@ class SimpleVAEModel(nn.Module):
                     nn.GELU() if nc_out != nc else nn.Identity(),
                 ) for nc_in, nc_out in zip(all_dims[::-1][:-1], all_dims[::-1][1:])
             ],
-            # nn.Sigmoid()
+            nn.Sigmoid() if final_sigmoid else nn.Identity(),
         )
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -70,7 +78,7 @@ class SimpleVAEModel(nn.Module):
         return recon, mu, logvar
 
 
-class SimpleVAEWeatherGenModel(WeatherGenModel):
+class SimpleVAEFaceGenModel(BaseModel):
     def __init__(
         self,
         *args,
@@ -78,8 +86,10 @@ class SimpleVAEWeatherGenModel(WeatherGenModel):
         nc: int,
         dims: list[int],
         latent_dim: int,
+        final_sigmoid: bool,
         kl_warmup_steps: int,
-        log_samples_interval: int,
+        kl_loss_multiplier: float = 1.,
+        log_samples_interval: int | None = None,
         **kwargs
     ):
         if 'ignore_hparams' in kwargs:
@@ -87,35 +97,44 @@ class SimpleVAEWeatherGenModel(WeatherGenModel):
         else:
             kwargs['ignore_hparams'] = ['val_tensor']
         super().__init__(*args, **kwargs)
-        self.val_tensor = torch.randn(8, 1, img_size, img_size, generator=torch.Generator().manual_seed(42))
-        self.kl_weight = np.linspace(0, 1, kl_warmup_steps)
+        self.val_tensor = torch.randn(8, latent_dim, generator=torch.Generator().manual_seed(42))
+        self.kl_weight = np.linspace(0, 1, kl_warmup_steps) * kl_loss_multiplier
         self.model = SimpleVAEModel(
             img_size=img_size,
             nc=nc,
             dims=dims,
             latent_dim=latent_dim,
+            final_sigmoid=final_sigmoid,
         )
 
-    def on_train_batch_end(self, *args, **kwargs) -> None:
-        is_rank_0 = not dist.is_initialized() or dist.get_rank() == 0
-        if is_rank_0 and self.global_step % self.hparams['log_samples_interval'] == 0:
-            is_training = self.training
-            self.train(False)
-            with torch.no_grad():
-                out = self.model(self.val_tensor.to(self.device))[0]
-                for idx, o in enumerate(out):
-                    img_data = o[0]
-                    img_data[img_data < 0.01] = torch.nan
-                    to_plot = plt.get_cmap('nipy_spectral')(img_data.cpu().numpy())[..., :3] # Get only RGB elements (omit A)
-                    Logger.current_logger().report_image(
-                        title=f'generated_output',
-                        series=f'{idx}',
-                        iteration=self.global_step,
-                        image=to_plot,
-                        max_image_history=-1,
-                    )
+    def _log_sample_images(self):
+        is_training = self.training
+        self.train(False)
+        with torch.no_grad():
+            out = self.model.decode(self.val_tensor.to(self.device))
+            for idx, o in enumerate(out):
+                img_data: torch.Tensor = o[0]
+                img_data[img_data < 0.01] = torch.nan
+                to_plot = img_data.cpu().detach().numpy()
+                to_plot = plt.get_cmap('nipy_spectral')(to_plot)[..., :3] # type: ignore
+                Logger.current_logger().report_image(
+                    title=f'generated_output',
+                    series=f'{idx}',
+                    iteration=self.global_step,
+                    image=to_plot,
+                    max_image_history=-1,
+                )
 
-            self.train(is_training)
+        self.train(is_training)
+
+    def on_train_batch_end(self, *args, **kwargs) -> None:
+        # is_rank_0 = not dist.is_initialized() or dist.get_rank() == 0
+        log_interval = self.hparams.get('log_samples_interval', None)
+        if log_interval is not None and self.global_step % log_interval == 0:
+            self._log_sample_images()
+
+    def on_train_epoch_end(self) -> None:
+        self._log_sample_images()
 
     def compute_losses(self, batch: torch.Tensor) -> Tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
         kl_weight = 1 if self.global_step >= len(self.kl_weight) else self.kl_weight[self.global_step]

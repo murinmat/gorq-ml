@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import datetime_glob
 import os
+import h5py
 from pathlib import Path
 from tqdm.auto import tqdm
 from typing import Callable
@@ -10,14 +11,9 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import Compose, RandomHorizontalFlip, Resize, ToTensor, RandomVerticalFlip
 from lightning import LightningDataModule
 
-TRAIN_RADARS = [
-    'KDMX',
-    'KUEX'
-]
-VAL_RADARS = [
-    'KGLD'
-]
-PATH_FORMAT = '/mnt/remote/mp_data_cmuchalek/nexrad/experiment-cache-updated-rhohv-pp-velocity/{radar}/%Y/%m/%d/sample_%Y-%m-%d_%H-%M-%S.npz'
+
+RADARS = ['KDMX', 'KLNX', 'KGLD']
+PATH_FORMAT = '/mnt/remote/mp_data_cmuchalek/nexrad/experiment-cache-hdf5/{radar}/%Y/%m/%d/{radar}_%Y-%m-%d_%H-%M-%S.h5'
 BASE_AUGMENTATIONS = [
     ToTensor(),
     Resize(256)
@@ -37,11 +33,8 @@ class WeatherGenDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, index: int) -> torch.Tensor:
-        try:
-            data = np.load(self.files[index], allow_pickle=True)['arr_0'][()]['input']['DBZH_pseudocappi'][0, 0]
-        except Exception as e:
-            print(f'Failed to open {self.files[index]}, got error: {e}')
-            raise
+        with h5py.File(self.files[index]) as f:
+            data = np.clip(np.array(f['input/DBZH_pseudocappi'])[0, 0] / 60., a_min=0, a_max=1)
         return self.augmentations(data)
 
 
@@ -87,38 +80,8 @@ class WeatherGenDataModule(LightningDataModule):
         )
 
 
-def _filter_files(files: list[Path], cache_file_path: str) -> list[Path]:
-    to_skip_file = Path(cache_file_path)
-    to_skip = []
-    if to_skip_file.exists():
-        with open(to_skip_file, 'r') as f:
-            for l in f.readlines():
-                to_skip.append(l.strip())
-    else:
-        for idx in tqdm(range(len(files))):
-            if os.path.getsize(files[idx]) == 0:
-                to_skip.append(files[idx])
-                continue
-            try:
-                _ = np.load(files[idx], allow_pickle=True)
-            except Exception as e:
-                to_skip.append(files[idx])
-        with open(to_skip_file, 'w+') as f:
-            for t in to_skip:
-                f.write(t + '\n')
-    return [x for x in files if x not in to_skip]
-
-
-
-def get_train_files() -> list[Path]:
-    train_files = []
-    for radar in TRAIN_RADARS:
-        train_files += [x[1].as_posix() for x in datetime_glob.walk(PATH_FORMAT.format(radar=radar))]
-    return _filter_files(train_files, 'to-skip-train.txt')
-
-
-def get_val_files() -> list[Path]:
-    val_files = []
-    for radar in VAL_RADARS:
-        val_files += [x[1].as_posix() for x in datetime_glob.walk(PATH_FORMAT.format(radar=radar))]
-    return _filter_files(val_files, 'to-skip-val.txt')
+def load_all_images() -> list[Path]:
+    all_files = []
+    for radar in RADARS:
+        all_files += [x[1] for x in datetime_glob.walk(PATH_FORMAT.format(radar=radar))]
+    return all_files

@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import torch.distributed as dist
+import matplotlib.pyplot as plt
 from torch import nn
 from typing import Tuple
 from clearml.logger import Logger
@@ -86,6 +88,7 @@ class SimpleVAEFaceGenModel(BaseModel):
         latent_dim: int,
         final_sigmoid: bool,
         kl_warmup_steps: int,
+        kl_loss_multiplier: float = 1.,
         log_samples_interval: int | None = None,
         **kwargs
     ):
@@ -95,7 +98,7 @@ class SimpleVAEFaceGenModel(BaseModel):
             kwargs['ignore_hparams'] = ['val_tensor']
         super().__init__(*args, **kwargs)
         self.val_tensor = torch.randn(8, latent_dim, generator=torch.Generator().manual_seed(42))
-        self.kl_weight = np.linspace(0, 1, kl_warmup_steps)
+        self.kl_weight = np.linspace(0, 1, kl_warmup_steps) * kl_loss_multiplier
         self.model = SimpleVAEModel(
             img_size=img_size,
             nc=nc,
@@ -110,9 +113,10 @@ class SimpleVAEFaceGenModel(BaseModel):
         with torch.no_grad():
             out = self.model.decode(self.val_tensor.to(self.device))
             for idx, o in enumerate(out):
-                img_data: torch.Tensor = o
+                img_data: torch.Tensor = o[0]
                 img_data[img_data < 0.01] = torch.nan
-                to_plot = img_data.permute(1, 2, 0).cpu().detach().numpy()
+                to_plot = img_data.cpu().detach().numpy()
+                to_plot = plt.get_cmap('nipy_spectral')(to_plot)[..., :3] # type: ignore
                 Logger.current_logger().report_image(
                     title=f'generated_output',
                     series=f'{idx}',
@@ -124,6 +128,7 @@ class SimpleVAEFaceGenModel(BaseModel):
         self.train(is_training)
 
     def on_train_batch_end(self, *args, **kwargs) -> None:
+        # is_rank_0 = not dist.is_initialized() or dist.get_rank() == 0
         log_interval = self.hparams.get('log_samples_interval', None)
         if log_interval is not None and self.global_step % log_interval == 0:
             self._log_sample_images()

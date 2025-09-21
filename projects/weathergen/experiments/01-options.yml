@@ -1,0 +1,40 @@
+configs:
+  - model_name:
+      - SimpleVAEFaceGenModel
+    model_kwargs:
+      latent_dim:
+        - 256
+        - 512
+        - 1024
+      dims:
+        - [64, 128, 256]
+        - [32, 64, 128, 256]
+        - [32, 64, 128, 256, 512]
+      lr:
+        - 0.00003
+        - 0.000003
+    dataloader:
+      batch_size:
+        - 32
+
+  - model_name:
+      - ConvVAEFaceGenModel
+    model_kwargs:
+      dims:
+        - [32, 64, 128]
+        - [32, 64]
+        - [64, 128, 256]
+        - [64, 128]
+      latent_nc:
+        - 8
+        - 16
+        - 32
+      lr:
+        - 0.00003
+        - 0.000003
+    dataloader:
+      batch_size:
+        - 32
+
+num_iterations: [3_000, 5_000, 20_000, 40_000]
+reduced_population_sizes: [30, 10, 3]

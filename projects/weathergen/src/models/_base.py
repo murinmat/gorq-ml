@@ -1,13 +1,12 @@
 import torch
 import abc
+import lightning as L
+from typing import Tuple
 from torch import nn
-from typing import Tuple, Type
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
-from lightning import LightningModule
 
-
-class WeatherGenModel(abc.ABC, LightningModule):
+class BaseModel(abc.ABC, L.LightningModule):
     def __init__(
         self,
         *,
@@ -21,7 +20,7 @@ class WeatherGenModel(abc.ABC, LightningModule):
         super().__init__()
         self.save_hyperparameters(ignore=ignore_hparams)
 
-    def configure_optimizers(self):
+    def configure_optimizers(self): # type: ignore
         optimizers = [
             torch.optim.AdamW(
                 self.parameters(),
@@ -64,7 +63,6 @@ class WeatherGenModel(abc.ABC, LightningModule):
                 prog_bar=k=='loss',
                 on_step=True,
                 on_epoch=True,
-                enable_graph=k=='loss',
                 sync_dist=True,
             )
         return loss_dict['loss'] # type: ignore
