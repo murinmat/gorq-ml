@@ -1,6 +1,7 @@
 import lightning as L
 import copy
 import hashlib
+import torch
 import asyncio
 from loguru import logger
 from tqdm.auto import tqdm
@@ -188,7 +189,9 @@ def search(
     metric_name: str,
     mode: Literal['min', 'max'],
     devices: list[int],
+    torch_mp_start_method: str = 'spawn'
 ) -> None:
+    torch.multiprocessing.set_start_method(torch_mp_start_method)
 
     if (len(possible_configs.reduced_population_sizes) + 1) != len(possible_configs.num_iterations):
         raise ValueError("Length of population sizes must be one less than the length of number of iterations.")
@@ -203,6 +206,10 @@ def search(
             desc='Iterating through the search space',
         ):
             total_iterations += current_num_iterations
+            if current_iteration_idx == len(possible_configs.num_iterations) - 1:
+                next_population_size = 0
+            else:
+                next_population_size = possible_configs.reduced_population_sizes[current_iteration_idx]
             current_population = _get_next_population(
                 current_population=current_population,
                 devices=devices,
@@ -212,7 +219,7 @@ def search(
                 metric_series=metric_series,
                 metric_name=metric_name,
                 mode=mode,
-                population_size=possible_configs.reduced_population_sizes[current_iteration_idx],
+                population_size=next_population_size,
                 num_iterations_todo=current_num_iterations,
                 num_iterations_total=sum(possible_configs.num_iterations),
             )

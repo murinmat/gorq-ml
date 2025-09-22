@@ -1,0 +1,47 @@
+task:
+  task_type: training
+  project_name: celeba-faces-gen
+
+callbacks:
+  LearningRateMonitor:
+    logging_interval: step
+
+checkpoint:
+  auto_insert_metric_name: false
+  dirpath: /data/modeling/checkpoints
+  filename: best_loss_{loss/val:.5f}_{step}
+  monitor: loss/val
+  save_last: true
+  save_top_k: 1
+  verbose: true
+
+dataloader:
+  num_workers: 8
+  batch_size: 64
+  persistent_workers: True
+
+data:
+  dataset_name: FacesDataset
+  common_kwargs:
+    base_path: /data/datasets/celeba/images
+    train_size: 0.9
+
+trainer:
+  accelerator: gpu
+  log_every_n_steps: 50
+  num_sanity_val_steps: 0
+  precision: 16-mixed
+  check_val_every_n_epoch: 1
+
+model:
+  model_kwargs:
+    nc: 3
+    final_sigmoid: true
+    img_size: 256
+  lr: 0.00003
+  betas: [0.9, 0.999]
+  lr_warmup_steps: 500
+  kl_warmup_steps: 500
+  kl_loss_multiplier: 1
+  log_samples_interval: 500
+  log_val_indices: [0, 250, 500, 750, 1000]

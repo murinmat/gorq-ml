@@ -1,0 +1,11 @@
+configs:
+    - model:
+        model_name: SimpleVAEModel
+        model_kwargs:
+          latent_dim:
+            - 2
+            - 4
+            - 8
+
+num_iterations: [50_000]
+reduced_population_sizes: []
