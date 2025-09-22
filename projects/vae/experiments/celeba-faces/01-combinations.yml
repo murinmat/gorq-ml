@@ -6,14 +6,11 @@ configs:
             - 64
             - 128
             - 256
+            - 512
           dims:
+            - [64, 128]
             - [64, 128, 256]
-        kl_loss_multiplier:
-          - 0.01
-          - 0.1
-          - 1.
-          - 10
-          - 100
+            - [64, 128, 256, 512]
 
-num_iterations: [5000]
+num_iterations: [10000]
 reduced_population_sizes: []

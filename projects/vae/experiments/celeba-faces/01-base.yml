@@ -42,6 +42,6 @@ model:
   betas: [0.9, 0.999]
   lr_warmup_steps: 500
   kl_warmup_steps: 500
-  kl_loss_multiplier: 1
+  kl_loss_multiplier: 0.
   log_samples_interval: 500
   log_val_indices: [0, 250, 500, 750, 1000]

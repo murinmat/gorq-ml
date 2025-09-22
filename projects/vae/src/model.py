@@ -50,14 +50,18 @@ class VAELightningModel(BaseModel):
             'generated': self.model.decode(self.val_tensor.to(self.device)),
         }
         if self.val_dataset is not None:
-            to_plot['reconstructed'] = torch.cat([
-                self.model(self.val_dataset[x].to(self.device)[None])[0]
-                for x in self.hparams['log_val_indices']
-            ], dim=0)
-            
-        
+            all_outputs = []
+            for val_sample_idx in self.hparams['log_val_indices']:
+                inp = self.val_dataset[val_sample_idx].to(self.device)[None]
+                out = self.model(inp)[0]
+                all_outputs.append(torch.cat([
+                    inp.cpu(),
+                    torch.zeros_like(inp[..., :10, :], device='cpu'),
+                    out.cpu(),
+                ], dim=-2))
+            to_plot['reconstructed'] = torch.cat(all_outputs, dim=0)
+
         for subset, outputs in to_plot.items():
-            logger.critical(f'Logging {subset} of shape {outputs.shape}')
             for idx, output in enumerate(outputs):
                 if self.hparams['plot_per_channel']:
                     for c_out in output:
