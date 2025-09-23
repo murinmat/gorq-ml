@@ -33,7 +33,7 @@ class FacesDataset(Dataset):
     @staticmethod
     def get_train_dataset(base_path: str, train_size: float) -> 'FacesDataset':
         all_images = list(Path(base_path).iterdir())
-        wanted_images = train_test_split(all_images, train_size=train_size)[0]
+        wanted_images = train_test_split(all_images, train_size=train_size, random_state=42)[0]
         return FacesDataset(
             images=wanted_images,
             augmentations=Compose(BASE_AUGMENTATIONS + TRAIN_AUGMENTATIONS)
@@ -42,7 +42,7 @@ class FacesDataset(Dataset):
     @staticmethod
     def get_val_dataset(base_path: str, train_size: float) -> 'FacesDataset':
         all_images = list(Path(base_path).iterdir())
-        wanted_images = train_test_split(all_images, train_size=train_size)[1]
+        wanted_images = train_test_split(all_images, train_size=train_size, random_state=42)[1]
         return FacesDataset(
             images=wanted_images,
             augmentations=Compose(BASE_AUGMENTATIONS)
