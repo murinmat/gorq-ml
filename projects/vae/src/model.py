@@ -82,7 +82,7 @@ class VAELightningModel(BaseModel):
                         max_history=-1,
                         colormap=colormap,
                     )
-            self.train(is_training)
+        self.train(is_training)
 
     def loss_fn(
             self,
@@ -105,7 +105,7 @@ class VAELightningModel(BaseModel):
         self._log_sample_images()
 
     def compute_losses(self, batch: torch.Tensor) -> Tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
-        kl_weight = 1 if self.global_step >= len(self.kl_weight) else self.kl_weight[self.global_step]
+        kl_weight = self.kl_weight[-1] if self.global_step >= len(self.kl_weight) else self.kl_weight[self.global_step]
         recon, mu, logvar = self.model(batch)
         loss, recon_loss, kldiv_loss = self.loss_fn(batch, recon, mu, logvar, kl_loss_weight=kl_weight)
         return recon, {
