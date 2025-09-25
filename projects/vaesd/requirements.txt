@@ -1,2 +1,4 @@
 einops
 xformers
+h5py
+datetime-glob

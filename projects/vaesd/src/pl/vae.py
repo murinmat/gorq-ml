@@ -73,7 +73,12 @@ class VAELightning(L.LightningModule):
             self.hparams['commitment_beta'] * quantize_losses['commitment_loss']
         )
         # Perceptual loss
-        loss_dict['lpips_loss'] = self.hparams['perceptual_weight'] * self.lpips(out.clamp(-1, 1).float(), inp.clamp(-1, 1)).mean()
+        out_for_lpips = out.clamp(-1, 1).float()
+        inp_for_lpips = inp.clamp(-1, 1).float()
+        if out_for_lpips.shape[-3] == 1:
+            out_for_lpips = torch.cat([out_for_lpips]*3, dim=-3)
+            inp_for_lpips = torch.cat([inp_for_lpips]*3, dim=-3)
+        loss_dict['lpips_loss'] = self.hparams['perceptual_weight'] * self.lpips(out_for_lpips, inp_for_lpips).mean()
         final_loss += loss_dict['lpips_loss']
         # Discriminator, if we are ready for it
         if self.global_step//2 > self.hparams['disc_step_start']:
@@ -171,9 +176,9 @@ class VAELightning(L.LightningModule):
             inp = ds[val_sample_idx].to(self.device)[None]
             out = self.model(inp)[0]
             all_outputs.append(torch.cat([
-                torch.clip((inp.cpu() + 1) / 2, 0, 1),
+                torch.clamp((inp.cpu() + 1) / 2, 0, 1),
                 torch.zeros_like(inp[..., :10, :], device='cpu'),
-                torch.clip((out.cpu() + 1) / 2, 0, 1),
+                torch.clamp((out.cpu() + 1) / 2, 0, 1),
             ], dim=-2))
         to_plot = torch.cat(all_outputs, dim=0)
 

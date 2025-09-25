@@ -1,23 +1,28 @@
 import numpy as np
 import torch
-from PIL import Image
+import datetime_glob
+import h5py
 from pathlib import Path
 from typing import Callable
 from dataclasses import dataclass
 from torch.utils.data import Dataset
-from torchvision.transforms import Compose, RandomHorizontalFlip, Resize
+from torchvision.transforms import Compose, RandomHorizontalFlip, Resize, ToTensor, RandomVerticalFlip
 from sklearn.model_selection import train_test_split
 
+
+RADARS = ['KDMX', 'KLNX', 'KGLD']
 BASE_AUGMENTATIONS = [
+    ToTensor(),
     Resize((256, 256))
 ]
 TRAIN_AUGMENTATIONS = [
     RandomHorizontalFlip(),
+    RandomVerticalFlip(),
 ]
 
 
 @dataclass(kw_only=True)
-class FacesDataset(Dataset):
+class WeatherGenDataset(Dataset):
     images: list[Path]
     augmentations: Callable[[torch.Tensor], torch.Tensor]
 
@@ -25,24 +30,28 @@ class FacesDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, index: int) -> torch.Tensor:
-        img_data = np.array(Image.open(self.images[index])).swapaxes(0, 2).swapaxes(1, 2)
-        img_data = np.nan_to_num(img_data, nan=0, neginf=0, posinf=0)
-        return self.augmentations(torch.as_tensor(img_data / 255. * 2 - 1, dtype=torch.float32))
-    
+        with h5py.File(self.images[index]) as f:
+            data = np.clip(np.array(f['input/DBZH_pseudocappi'])[0, 0], a_min=0, a_max=1) * 2 - 1
+        return self.augmentations(data)
+
     @staticmethod
-    def get_train_dataset(base_path: str, train_size: float) -> 'FacesDataset':
-        all_images = list(Path(base_path).iterdir())
+    def get_train_dataset(path_format: str, train_size: float) -> 'WeatherGenDataset':
+        all_images = []
+        for r in RADARS:
+            all_images += [x[1] for x in datetime_glob.walk(path_format.format(radar=r))]
         wanted_images = train_test_split(all_images, train_size=train_size, random_state=42)[0]
-        return FacesDataset(
+        return WeatherGenDataset(
             images=wanted_images,
             augmentations=Compose(BASE_AUGMENTATIONS + TRAIN_AUGMENTATIONS)
         )
-    
+
     @staticmethod
-    def get_val_dataset(base_path: str, train_size: float) -> 'FacesDataset':
-        all_images = list(Path(base_path).iterdir())
+    def get_val_dataset(path_format: str, train_size: float) -> 'WeatherGenDataset':
+        all_images = []
+        for r in RADARS:
+            all_images += [x[1] for x in datetime_glob.walk(path_format.format(radar=r))]
         wanted_images = train_test_split(all_images, train_size=train_size, random_state=42)[1]
-        return FacesDataset(
+        return WeatherGenDataset(
             images=wanted_images,
             augmentations=Compose(BASE_AUGMENTATIONS)
         )
