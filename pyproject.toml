@@ -26,7 +26,7 @@ dependencies = [
     "torch",
     "numpy",
     "tqdm",
-    "mlflow",
+    "clearml",
     "kaggle",
     "ipywidgets",
     "ipykernel",
@@ -34,6 +34,8 @@ dependencies = [
     "lightning",
     "torchmetrics",
     "loguru",
+    "torchvision",
+    "tensorboard",
 ]
 authors = [
     { name = "Matej Murín", email = "matejmurin01@gmail.com" },
