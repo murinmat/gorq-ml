@@ -10,7 +10,6 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Literal
 from clearml import Task
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 from gorq_ml.tuning.utils import ConfigCombinations
