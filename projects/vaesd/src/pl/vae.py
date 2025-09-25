@@ -3,14 +3,11 @@ import torch.nn.functional as F
 import lightning as L
 from loguru import logger
 from torch.utils.data import Dataset
-from clearml import Task
 from typing import Literal, Tuple
 from torch.optim import Optimizer
 from torch.optim.adam import Adam
-
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity as LPIPS
 
-# from src.models.lpips import LPIPS
 from src.models.vae import VAE
 from src.models.vqvae import VQVAE
 from src.models.discriminator import Discriminator
@@ -63,28 +60,32 @@ class VAELightning(L.LightningModule):
         loss_dict = {}
         final_loss = 0
 
-        # Pixel-wise
-        loss_dict['recon_loss'] = F.mse_loss(out, inp) # TODO: should I divide this by acc_gradient_steps?
-        # Codebook (VAE regularization)
-        loss_dict['codebook_loss'] = self.hparams['codebook_weight'] * quantize_losses['codebook_loss']
-        final_loss = (
-            loss_dict['recon_loss'] +
-            loss_dict['codebook_loss'] + 
-            self.hparams['commitment_beta'] * quantize_losses['commitment_loss']
-        )
-        # Perceptual loss
+        # Pixel-wise loss
+        recon_loss = F.mse_loss(out, inp)
+        loss_dict['recon_loss'] = recon_loss.item()
+        final_loss += recon_loss
+        # VQVAE loss (codebook + commitment losses)
+        codebook_loss = self.hparams['codebook_weight'] * quantize_losses['codebook_loss']
+        loss_dict['codebook_loss'] = codebook_loss.item()
+        final_loss += codebook_loss
+        commitment_loss = self.hparams['commitment_beta'] * quantize_losses['commitment_loss']
+        loss_dict['commitment_loss'] = commitment_loss.item()
+        final_loss += commitment_loss
+        # Perceptual loss (LPIPS)
         out_for_lpips = out.clamp(-1, 1).float()
         inp_for_lpips = inp.clamp(-1, 1).float()
         if out_for_lpips.shape[-3] == 1:
             out_for_lpips = torch.cat([out_for_lpips]*3, dim=-3)
             inp_for_lpips = torch.cat([inp_for_lpips]*3, dim=-3)
-        loss_dict['lpips_loss'] = self.hparams['perceptual_weight'] * self.lpips(out_for_lpips, inp_for_lpips).mean()
-        final_loss += loss_dict['lpips_loss']
-        # Discriminator, if we are ready for it
+        perceptual_loss = self.hparams['perceptual_weight'] * self.lpips(out_for_lpips, inp_for_lpips).mean()
+        loss_dict['perceptual_loss'] = perceptual_loss.item()
+        final_loss += perceptual_loss
+        # Discriminator only if the training of it should have started by now
         if self.global_step//2 > self.hparams['disc_step_start']:
             disc_fake_pred = self.discriminator(out)
-            loss_dict['gen_disc_loss'] =  self.hparams['disc_weight'] * F.mse_loss(disc_fake_pred, torch.ones_like(disc_fake_pred))
-            final_loss += loss_dict['gen_disc_loss']
+            gen_disc_loss = self.hparams['disc_weight'] * F.mse_loss(disc_fake_pred, torch.ones_like(disc_fake_pred))
+            loss_dict['gen_disc_loss'] = gen_disc_loss.item()
+            final_loss += gen_disc_loss
         return final_loss, loss_dict
 
     def configure_optimizers(self) -> list[Optimizer]:
@@ -112,21 +113,21 @@ class VAELightning(L.LightningModule):
         loss, loss_dict = self.get_generator_loss(inp, out, quantize_losses)
         self.manual_backward(loss)
         optim.step()
-        optim.zero_grad()
+        optim.zero_grad(set_to_none=True)
         self.untoggle_optimizer(optim)
-        self.log('gen_loss/train', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log('gen_loss/train', loss.item(), on_step=True, on_epoch=True, logger=True)
         self.log_dict({f'{k}/train': v for k, v in loss_dict.items()}, on_step=True, on_epoch=True)
 
     def get_discriminator_loss(self, real: torch.Tensor, fake: torch.Tensor) -> Tuple[torch.Tensor, dict[str, torch.Tensor]]:
         disc_fake_pred = self.discriminator(fake.detach())
         disc_real_pred = self.discriminator(real)
-        disc_fake_loss = F.mse_loss(disc_fake_pred, torch.zeros_like(disc_fake_pred))
-        disc_real_loss = F.mse_loss(disc_real_pred, torch.zeros_like(disc_real_pred))
-        disc_loss = self.hparams['disc_weight'] * (disc_fake_loss + disc_real_loss) / 2
+        disc_fake_loss = self.hparams['disc_weight'] * F.mse_loss(disc_fake_pred, torch.zeros_like(disc_fake_pred))
+        disc_real_loss = self.hparams['disc_weight'] * F.mse_loss(disc_real_pred, torch.ones_like(disc_real_pred))
+        disc_loss = (disc_fake_loss + disc_real_loss) / 2
 
         return disc_loss, {
-            'disc_fake_loss': self.hparams['disc_weight']* disc_fake_loss,
-            'disc_real_loss': self.hparams['disc_weight']* disc_real_loss,
+            'disc_fake_loss': disc_fake_loss.item(),
+            'disc_real_loss': disc_real_loss.item(),
         }
 
     def train_discriminator(
@@ -140,10 +141,10 @@ class VAELightning(L.LightningModule):
         loss, loss_dict = self.get_discriminator_loss(real=inp, fake=out)
         self.manual_backward(loss)
         optim.step()
-        optim.zero_grad()
+        optim.zero_grad(set_to_none=True)
         self.untoggle_optimizer(optim)
 
-        self.log(f'disc_loss/train', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log(f'disc_loss/train', loss.item(), on_step=True, on_epoch=True)
         self.log_dict({f'{k}/train': v for k, v in loss_dict.items()}, on_step=True, on_epoch=True)
 
     def training_step(self, batch: torch.Tensor) -> None:
@@ -156,8 +157,8 @@ class VAELightning(L.LightningModule):
         out, _, quantize_losses = self.model(batch)
         gen_loss, gen_loss_dict = self.get_generator_loss(batch, out, quantize_losses)
         disc_loss, disc_loss_dict = self.get_discriminator_loss(real=batch, fake=out)
-        self.log('gen_loss/val', gen_loss, on_step=False, on_epoch=True)
-        self.log(f'disc_loss/val', disc_loss, on_step=False, on_epoch=True)
+        self.log('gen_loss/val', gen_loss.item(), on_step=False, on_epoch=True)
+        self.log(f'disc_loss/val', disc_loss.item(), on_step=False, on_epoch=True)
         self.log_dict(
             {f'{k}/val': v for k, v in (gen_loss_dict | disc_loss_dict).items()},
             on_step=False,
@@ -204,7 +205,7 @@ class VAELightning(L.LightningModule):
                 )
         self.train(is_training)
 
-    def on_train_batch_end(self, *args, **kwargs) -> None:
+    def on_before_backward(self, *args, **kwargs) -> None:
         if (self.global_step % self.hparams['viz_frequency']) != 0:
             return
         logger.warning('Starting visualization')
