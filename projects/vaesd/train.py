@@ -53,13 +53,17 @@ def train(
         train_dataset=dl.train_dataloader().dataset,
     )
 
-    config['checkpoint']['dirpath'] = os.path.join(config['checkpoint']['dirpath'], config['task']['task_name'])
+    config['checkpoint']['dirpath'] = os.path.join(
+        config['checkpoint']['dirpath'],
+        config['task']['project_name'],
+        config['task']['task_name'],
+    )
     task: Task = Task.init(**config['task'])
     task.connect(config)
     trainer = L.Trainer(
         **config['trainer'],
         callbacks=[callbacks.ModelCheckpoint(**config['checkpoint'])] + [
-            getattr(callbacks, k)(**v) for k, v in config.get('callbacks').items() # type: ignore
+            getattr(callbacks, k)(**v) for k, v in config.get('callbacks', {}).items() # type: ignore
         ], # type: ignore
         deterministic=True,
     )
