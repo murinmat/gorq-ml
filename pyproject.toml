@@ -28,6 +28,12 @@ dependencies = [
     "tqdm",
     "mlflow",
     "kaggle",
+    "ipywidgets",
+    "ipykernel",
+    "IPython",
+    "lightning",
+    "torchmetrics",
+    "loguru",
 ]
 authors = [
     { name = "Matej Murín", email = "matejmurin01@gmail.com" },
