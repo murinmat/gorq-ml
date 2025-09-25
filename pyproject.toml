@@ -32,7 +32,7 @@ dependencies = [
     "ipykernel",
     "IPython",
     "lightning",
-    "torchmetrics",
+    "torchmetrics==1.7.0",
     "loguru",
     "torchvision",
     "tensorboard",
