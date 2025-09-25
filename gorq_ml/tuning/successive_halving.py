@@ -2,7 +2,8 @@ import lightning as L
 import copy
 import hashlib
 import torch
-import asyncio
+import multiprocessing as mp
+import traceback
 from loguru import logger
 from tqdm.auto import tqdm
 from pathlib import Path
@@ -36,7 +37,7 @@ class PreparedTraining:
     config: dict
 
 
-def _run_call_executor(
+def _train_model(
     *,
     config: dict,
     current_iteration: int,
@@ -72,29 +73,64 @@ def _run_call_executor(
 
     if task_existed:
         logger.warning(f'Task with config {config} already existed, skipping training...')
-        succeeded = True
     else:
-        try:
-            prepared_training.trainer.fit(
-                prepared_training.model,
-                prepared_training.dl,
-                ckpt_path='last' if resume else None
-            )
-            prepared_training.trainer.validate(
-                prepared_training.model,
-                dataloaders=prepared_training.dl.val_dataloader()
-            )
-            succeeded = True
-        except Exception as e:
-            logger.warning(f'Training failed with e: {e}, continuing...')
-            succeeded = False
+        prepared_training.trainer.fit(
+            prepared_training.model,
+            prepared_training.dl,
+            ckpt_path='last' if resume else None
+        )
+        prepared_training.trainer.validate(
+            prepared_training.model,
+            dataloaders=prepared_training.dl.val_dataloader()
+        )
     task.close()
     logger.critical('Run ended')
     return {
         'task_id': task.id,
         'config': original_config,
-        'succeeded': succeeded,
     }
+
+
+def _dispatch_on_device(
+        *,
+        config: dict,
+        device: int,
+        num_iterations_todo: int,
+        num_iterations_total: int,
+        current_iteration: int,
+        device_queue: mp.Queue,
+        results_queue: mp.Queue,
+        get_training_setup_function: Callable[[TrainingConfig, int, str], PreparedTraining],
+) -> None:
+    logger.warning(f'Starting with {config} on {device}')
+    try:
+        altered_config = copy.deepcopy(config)
+        altered_config['trainer']['max_steps'] = num_iterations_todo
+        altered_config['total_iterations'] = num_iterations_total
+        altered_config['trainer']['devices'] = [device]
+
+        current_config = TrainingConfig(
+            successive_halving_iteration=0,
+            config=altered_config,
+        )
+        prepared_training = get_training_setup_function(
+            current_config,
+            current_iteration,
+            hashlib.sha256(str(config).encode()).hexdigest()
+        )
+        result = _train_model(
+            config=altered_config,
+            current_iteration=current_iteration,
+            prepared_training=prepared_training,
+            original_config=config,
+            resume=current_iteration != 0
+        )
+        results_queue.put(result)
+    except Exception as e:
+        logger.exception(f'Calculation failed with {e}.\n{traceback.format_exc()}')
+        results_queue.put(None)
+    finally:
+        device_queue.put(device)
 
 
 def _get_next_population(
@@ -102,7 +138,6 @@ def _get_next_population(
     current_population: list[dict],
     devices: list[int],
     current_iteration: int,
-    executor: ProcessPoolExecutor,
     get_training_setup_function: Callable[[TrainingConfig, int, str], PreparedTraining],
     metric_series: str,
     metric_name: str,
@@ -112,55 +147,37 @@ def _get_next_population(
     num_iterations_total: int,
 ) -> list[dict]:
     current_results = []
-    futures = []
-    device_queue = asyncio.Queue()
+    all_results = []
+    with mp.Manager() as manager:
+        device_queue = manager.Queue()
+        for dev in devices:
+            device_queue.put(dev)
+        results_queue = manager.Queue()
+        for conf in current_population:
+            logger.info(f'Waiting for an available device')
+            device = device_queue.get(block=True)
+            logger.critical(f'Received free device: {device}')
+            mp.Process(
+                target=_dispatch_on_device,
+                kwargs={
+                    'config': conf,
+                    'device': device,
+                    'num_iterations_todo': num_iterations_todo,
+                    'num_iterations_total': num_iterations_total,
+                    'current_iteration': current_iteration,
+                    'device_queue': device_queue,
+                    'results_queue': results_queue,
+                    'get_training_setup_function': get_training_setup_function,
+                },
+                daemon=False,
+            ).start()
+        for _ in range(len(current_population)):
+            result = results_queue.get()
+            if result is not None:
+                all_results.append(result)
 
-    for dev in devices:
-        device_queue.put_nowait(dev)
-
-    async def submit_config(config):
-        dev_idx = await device_queue.get()
-        try:
-            altered_config = copy.deepcopy(config)
-            altered_config['trainer']['max_steps'] = num_iterations_todo
-            altered_config['total_iterations'] = num_iterations_total
-            altered_config['trainer']['devices'] = [dev_idx]
-
-            current_config = TrainingConfig(
-                successive_halving_iteration=0,
-                config=altered_config,
-            )
-            prepared_training = get_training_setup_function(
-                current_config,
-                current_iteration,
-                hashlib.sha256(str(config).encode()).hexdigest()
-            )
-            fut = executor.submit(
-                _run_call_executor,
-                config=altered_config,
-                current_iteration=current_iteration,
-                prepared_training=prepared_training,
-                original_config=config,
-                resume=current_iteration != 0
-            )
-            return fut
-        finally:
-            device_queue.put_nowait(dev_idx)
-
-    async def run_all():
-        tasks = [submit_config(cfg) for cfg in current_population]
-        return await asyncio.gather(*tasks)
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    futures = loop.run_until_complete(run_all())
-    loop.close()
-
-    for fut in as_completed(futures):
-        result = fut.result()
-        task_id, config, succeeded = result['task_id'], result['config'], result['succeeded']
-        if not succeeded:
-            continue
+    for result in all_results:
+        task_id, config = result['task_id'], result['config']
         try:
             task: Task = Task.get_task(task_id)
             latest_metrics = task.get_last_scalar_metrics()
@@ -198,28 +215,25 @@ def search(
 
     current_population = possible_configs.configs
     total_iterations = 0
-
-    with ProcessPoolExecutor(max_workers=len(devices)) as executor:
-        for current_iteration_idx, current_num_iterations in tqdm(
-            enumerate(possible_configs.num_iterations),
-            total=len(possible_configs.num_iterations),
-            desc='Iterating through the search space',
-        ):
-            total_iterations += current_num_iterations
-            if current_iteration_idx == len(possible_configs.num_iterations) - 1:
-                next_population_size = 0
-            else:
-                next_population_size = possible_configs.reduced_population_sizes[current_iteration_idx]
-            current_population = _get_next_population(
-                current_population=current_population,
-                devices=devices,
-                current_iteration=current_iteration_idx,
-                executor=executor,
-                get_training_setup_function=get_training_setup_function,
-                metric_series=metric_series,
-                metric_name=metric_name,
-                mode=mode,
-                population_size=next_population_size,
-                num_iterations_todo=current_num_iterations,
-                num_iterations_total=sum(possible_configs.num_iterations),
-            )
+    for current_iteration_idx, current_num_iterations in tqdm(
+        enumerate(possible_configs.num_iterations),
+        total=len(possible_configs.num_iterations),
+        desc='Iterating through the search space',
+    ):
+        total_iterations += current_num_iterations
+        if current_iteration_idx == len(possible_configs.num_iterations) - 1:
+            next_population_size = 0
+        else:
+            next_population_size = possible_configs.reduced_population_sizes[current_iteration_idx]
+        current_population = _get_next_population(
+            current_population=current_population,
+            devices=devices,
+            current_iteration=current_iteration_idx,
+            get_training_setup_function=get_training_setup_function,
+            metric_series=metric_series,
+            metric_name=metric_name,
+            mode=mode,
+            population_size=next_population_size,
+            num_iterations_todo=current_num_iterations,
+            num_iterations_total=sum(possible_configs.num_iterations),
+        )
