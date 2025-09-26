@@ -24,7 +24,7 @@ parser.add_argument(
     '--name',
     required=True,
     type=str,
-    help='Base name of the experiments to run.'
+    help='Name of the experiment to run'
 )
 
 def train(
