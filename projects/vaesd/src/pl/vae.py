@@ -185,10 +185,10 @@ class VAELightning(L.LightningModule):
 
         for idx, output in enumerate(to_plot):
             if self.hparams['plot_per_channel']:
-                for c_out in output:
+                for c_idx, c_out in enumerate(output):
                     log_image(
                         data=c_out,
-                        title=f'Viz {type}',
+                        title=f'Viz {type} ({c_idx})',
                         series=f'Index {idx}',
                         iteration=self.global_step,
                         max_history=-1,
