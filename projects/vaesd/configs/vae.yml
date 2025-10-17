@@ -5,19 +5,24 @@ task:
 callbacks:
   LearningRateMonitor:
     logging_interval: step
+  EarlyStopping:
+    monitor: loss/val
+    min_delta: 0.0
+    patience: 5
+    mode: min
 
 checkpoint:
   auto_insert_metric_name: false
   dirpath: /data/modeling/checkpoints/
-  filename: best_loss_{loss/val:.5f}_{step}
-  monitor: gen_loss/val
+  filename: loss={loss/val:.5f}_step={step}
+  monitor: loss/val
   save_last: true
-  save_top_k: 3
+  save_top_k: 10
   verbose: true
 
 dataloader:
-  num_workers: 5
-  batch_size: 10
+  num_workers: 8
+  batch_size: 8
   pin_memory: True
   persistent_workers: True
 
@@ -35,36 +40,37 @@ trainer:
   check_val_every_n_epoch: 1
   devices: [0]
 
-
 model:
     model_name: VQVAE
     model_kwargs:
         im_channels: 3
         model_config:
-            z_channels: 4
-            codebook_size : 8192
-            down_channels : [64, 128, 256, 256]
-            mid_channels : [256, 256]
+            z_channels: 6
+            codebook_size : 2048
+            down_channels : [64, 128, 256, 512]
+            mid_channels : [512, 512]
             down_sample : [True, True, True]
             attn_down : [False, False, False]
             norm_channels: 32
-            num_heads: 4
+            num_heads: 8
             num_down_layers : 2
-            num_mid_layers : 2
+            num_mid_layers : 3
             num_up_layers : 2
     discriminator_kwargs:
         im_channels: 3
+        conv_channels: [128, 256, 512]
     model_lr: 0.00001
     model_betas: [0.5, 0.999]
     disc_lr: 0.00001
     disc_betas: [0.5, 0.999]
     disc_step_start: 15000
     codebook_weight: 1
-    commitment_beta: 0.2
+    commitment_beta: 0.5
     disc_weight: 0.5
     perceptual_weight: 1
     viz_val_indices: [0, 10, 50, 100, 500, 1000]
     viz_train_indices: [0, 10, 50, 100, 500, 1000]
-    viz_frequency: 500
+    viz_frequency: 2500
+    acc_grad: 2
 
-ckpt_path: /data/modeling/checkpoints/vqvae-train/01-FaceGen/last.ckpt
+ckpt_path: /data/modeling/checkpoints/vqvae-train/03-FaceGen-VQVAE;z=6;beta=0.5;dict-size=2048/last.ckpt

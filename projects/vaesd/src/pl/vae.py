@@ -8,11 +8,11 @@ from torch.optim import Optimizer
 from torch.optim.adam import Adam
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity as LPIPS
 
-from src.models.vae import VAE
 from src.models.vqvae import VQVAE
 from src.models.discriminator import Discriminator
 
 from gorq_ml.training.utils import log_image
+from gorq_ml.utils import calc_perplexity
 
 
 class VAELightning(L.LightningModule):
@@ -37,19 +37,22 @@ class VAELightning(L.LightningModule):
             train_dataset: Dataset | None = None,
             plot_colormap: str | None = None,
             plot_per_channel: bool = False,
+            acc_grad: int = 1,
     ) -> None:
         super().__init__()
         self.lpips = LPIPS(net_type='vgg').eval()
         if model_name not in ['VQVAE']:
             raise ValueError(f'Unknown model name: {model_name}')
-        self.model: VAE | VQVAE = globals()[model_name](**model_kwargs)
+        self.model: VQVAE = globals()[model_name](**model_kwargs)
         self.discriminator = Discriminator(**discriminator_kwargs)
-        self.save_hyperparameters(ignore=['lpips', 'train_dataset', 'val_dataset'])
+        self.save_hyperparameters(ignore=['lpips', 'train_dataset', 'val_dataset', 'gen_grad', 'disc_grad', 'current_acc_grad_step'])
         self.automatic_optimization = False
         self.val_dataset = val_dataset
         self.train_dataset = train_dataset
         self.viz_val_indices = viz_val_indices
         self.viz_train_indices = viz_train_indices
+        self.acc_grad = acc_grad
+        self.current_acc_grad_step = 0
 
     def get_generator_loss(
             self,
@@ -86,6 +89,9 @@ class VAELightning(L.LightningModule):
             gen_disc_loss = self.hparams['disc_weight'] * F.mse_loss(disc_fake_pred, torch.ones_like(disc_fake_pred))
             loss_dict['gen_disc_loss'] = gen_disc_loss.item()
             final_loss += gen_disc_loss
+        else:
+            loss_dict['gen_disc_loss'] = self.hparams['disc_weight'] * 1
+            final_loss += self.hparams['disc_weight'] * 1
         return final_loss, loss_dict
 
     def configure_optimizers(self) -> list[Optimizer]:
@@ -112,11 +118,13 @@ class VAELightning(L.LightningModule):
         self.toggle_optimizer(optim)
         loss, loss_dict = self.get_generator_loss(inp, out, quantize_losses)
         self.manual_backward(loss)
-        optim.step()
-        optim.zero_grad(set_to_none=True)
+        if self.current_acc_grad_step == self.acc_grad:
+            optim.step()
+            optim.zero_grad()
         self.untoggle_optimizer(optim)
-        self.log('gen_loss/train', loss.item(), on_step=True, on_epoch=True, logger=True)
-        self.log_dict({f'{k}/train': v for k, v in loss_dict.items()}, on_step=True, on_epoch=True)
+        if self.current_acc_grad_step == self.acc_grad:
+            self.log('loss/train', loss.item(), on_step=True, on_epoch=True, logger=True)
+            self.log_dict({f'{k}/train': v for k, v in loss_dict.items()}, on_step=True, on_epoch=True)
 
     def get_discriminator_loss(self, real: torch.Tensor, fake: torch.Tensor) -> Tuple[torch.Tensor, dict[str, torch.Tensor]]:
         disc_fake_pred = self.discriminator(fake.detach())
@@ -140,30 +148,41 @@ class VAELightning(L.LightningModule):
         self.toggle_optimizer(optim)
         loss, loss_dict = self.get_discriminator_loss(real=inp, fake=out)
         self.manual_backward(loss)
-        optim.step()
-        optim.zero_grad(set_to_none=True)
+        if self.current_acc_grad_step == self.acc_grad:
+            optim.step()
+            optim.zero_grad()
         self.untoggle_optimizer(optim)
-
-        self.log(f'disc_loss/train', loss.item(), on_step=True, on_epoch=True)
-        self.log_dict({f'{k}/train': v for k, v in loss_dict.items()}, on_step=True, on_epoch=True)
+        if self.current_acc_grad_step == self.acc_grad:
+            self.log(f'disc_loss/train', loss.item(), on_step=True, on_epoch=True)
+            self.log_dict({f'{k}/train': v for k, v in loss_dict.items()}, on_step=True, on_epoch=True)
 
     def training_step(self, batch: torch.Tensor) -> None:
-        out, _, quantize_losses = self.model(batch)
+        self.current_acc_grad_step += 1
+
+        out, quantize_losses, used_indices = self.model(batch)
         self.train_generator(batch, out, quantize_losses)
         if self.global_step//2 > self.hparams['disc_step_start']:
             self.train_discriminator(batch, out)
+
+        self.current_acc_grad_step = self.current_acc_grad_step % self.acc_grad
+
+        perplexity = calc_perplexity(used_indices.detach(), self.model.codebook_size).perplexity
+        self.log('perplexity/train', perplexity, on_step=True, on_epoch=True)
         
     def validation_step(self, batch: torch.Tensor) -> None:
-        out, _, quantize_losses = self.model(batch)
+        out, quantize_losses, used_indices = self.model(batch)
         gen_loss, gen_loss_dict = self.get_generator_loss(batch, out, quantize_losses)
         disc_loss, disc_loss_dict = self.get_discriminator_loss(real=batch, fake=out)
-        self.log('gen_loss/val', gen_loss.item(), on_step=False, on_epoch=True)
+        self.log('loss/val', gen_loss.item(), on_step=False, on_epoch=True)
         self.log(f'disc_loss/val', disc_loss.item(), on_step=False, on_epoch=True)
         self.log_dict(
             {f'{k}/val': v for k, v in (gen_loss_dict | disc_loss_dict).items()},
             on_step=False,
             on_epoch=True
         )
+
+        perplexity = calc_perplexity(used_indices.detach(), self.model.codebook_size).perplexity
+        self.log('perplexity/val', perplexity, on_step=False, on_epoch=True)
 
     @torch.no_grad()
     def _log_sample_images(self, ds: Dataset | None, indices: list[int], type: str):
@@ -211,7 +230,10 @@ class VAELightning(L.LightningModule):
         logger.warning('Starting visualization')
         self._log_sample_images(self.val_dataset, self.viz_val_indices, 'val')
         self._log_sample_images(self.train_dataset, self.viz_train_indices, 'train')
+        logger.warning('Ended visualization')
 
     def on_validation_epoch_end(self) -> None:
+        logger.warning('Starting visualization')
         self._log_sample_images(self.val_dataset, self.viz_val_indices, 'val')
         self._log_sample_images(self.train_dataset, self.viz_train_indices, 'train')
+        logger.warning('Ended visualization')

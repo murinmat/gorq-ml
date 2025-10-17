@@ -123,8 +123,8 @@ class VQVAE(nn.Module):
         
         # quant_out -> B, C, H, W
         quant_out = quant_out.reshape((B, H, W, C)).permute(0, 3, 1, 2)
-        min_encoding_indices = min_encoding_indices.reshape((-1, quant_out.size(-2), quant_out.size(-1)))
-        return quant_out, quantize_losses, min_encoding_indices
+        used_indices = min_encoding_indices.flatten()
+        return quant_out, quantize_losses, used_indices
 
     def encode(self, x):
         out = self.encoder_conv_in(x)
@@ -136,8 +136,8 @@ class VQVAE(nn.Module):
         out = nn.SiLU()(out)
         out = self.encoder_conv_out(out)
         out = self.pre_quant_conv(out)
-        out, quant_losses, _ = self.quantize(out)
-        return out, quant_losses
+        out, quant_losses, used_indices = self.quantize(out)
+        return out, quant_losses, used_indices
     
     def decode(self, z):
         out = z
@@ -154,6 +154,6 @@ class VQVAE(nn.Module):
         return self.act(out)
     
     def forward(self, x):
-        z, quant_losses = self.encode(x)
+        z, quant_losses, used_indices = self.encode(x)
         out = self.decode(z)
-        return out, z, quant_losses
+        return out, quant_losses, used_indices
