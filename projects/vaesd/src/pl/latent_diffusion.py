@@ -108,7 +108,8 @@ class LatentDiffusionLightning(L.LightningModule):
             else:
                 xt = x0_pred  # final step
 
-        return self.vae.decode(xt).cpu().clamp(-1, 1) * 0.5 + 0.5
+        quantized_output = self.vae.quantize(xt)[0]
+        return self.vae.decode(quantized_output).cpu().clamp(-1, 1) * 0.5 + 0.5
 
     def _viz_samples(self):
         logger.warning(f'Starting visualization')
