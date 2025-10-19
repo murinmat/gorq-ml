@@ -61,7 +61,7 @@ model:
     latent_shape: [6, 64, 64]
     model_betas: [0.9, 0.999]
     viz_frequency: 2000
-    num_inference_tsteps: 10
-    viz_n_samples: 1
+    num_inference_tsteps: 100
+    viz_n_samples: 4
     viz_denoising_seed: 8
     input_img_resolution: 256
