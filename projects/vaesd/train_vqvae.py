@@ -53,7 +53,6 @@ def train(
         val_dataset=dl.val_dataloader().dataset,
         train_dataset=dl.train_dataloader().dataset,
     )
-    model = torch.compile(model)
 
     config['checkpoint']['dirpath'] = os.path.join(
         config['checkpoint']['dirpath'],
