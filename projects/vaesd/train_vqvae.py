@@ -58,8 +58,8 @@ def train(
         config['task']['project_name'],
         config['task']['task_name'],
     )
-    task: Task = Task.init(**config['task'])
-    task.connect(config)
+    # task: Task = Task.init(**config['task'])
+    # task.connect(config)
     trainer = L.Trainer(
         **config['trainer'],
         callbacks=[callbacks.ModelCheckpoint(**config['checkpoint'])] + [

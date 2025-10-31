@@ -186,6 +186,7 @@ class VAELightning(L.LightningModule):
 
     @torch.no_grad()
     def _log_sample_images(self, ds: Dataset | None, indices: list[int], type: str):
+        return
         is_training = self.training
         self.train(False)
         if ds is None:
