@@ -21,8 +21,8 @@ checkpoint:
   verbose: true
 
 dataloader:
-  num_workers: 8
-  batch_size: 8
+  num_workers: 4
+  batch_size: 1
   pin_memory: True
   persistent_workers: True
 
@@ -45,10 +45,10 @@ model:
     model_kwargs:
         im_channels: 3
         model_config:
-            z_channels: 6
+            z_channels: 8
             codebook_size : 2048
-            down_channels : [64, 128, 256, 512]
-            mid_channels : [512, 512]
+            down_channels : [128, 256, 512, 1024]
+            mid_channels : [1024, 1024]
             down_sample : [True, True, True]
             attn_down : [False, False, False]
             norm_channels: 32
@@ -71,6 +71,3 @@ model:
     viz_val_indices: [0, 10, 50, 100, 500, 1000]
     viz_train_indices: [0, 10, 50, 100, 500, 1000]
     viz_frequency: 2500
-    acc_grad: 2
-
-ckpt_path: /data/modeling/checkpoints/vqvae-train/03-FaceGen-VQVAE;z=6;beta=0.5;dict-size=2048/last.ckpt

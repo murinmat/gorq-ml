@@ -1,6 +1,7 @@
 import os
 import yaml
 import lightning as L
+import torch
 from clearml import Task
 from lightning.pytorch.loggers import TensorBoardLogger
 from loguru import logger
@@ -52,6 +53,7 @@ def train(
         val_dataset=dl.val_dataloader().dataset,
         train_dataset=dl.train_dataloader().dataset,
     )
+    model = torch.compile(model)
 
     config['checkpoint']['dirpath'] = os.path.join(
         config['checkpoint']['dirpath'],
@@ -66,6 +68,7 @@ def train(
             getattr(callbacks, k)(**v) for k, v in config.get('callbacks', {}).items() # type: ignore
         ], # type: ignore
         deterministic=True,
+        strategy='ddp_find_unused_parameters_true'
     )
     trainer.fit(model, dl, ckpt_path=config.get('ckpt_path'))
 
