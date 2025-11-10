@@ -1,25 +1,19 @@
 import lightning as L
-from typing import Tuple
-from torch.utils.data import DataLoader, Dataset
 import torch
 import torch.nn.functional as F
-import lightning as L
-from loguru import logger
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset
 from typing import Tuple
+from torch.utils.data import Dataset
+from loguru import logger
 from torch.optim import Optimizer
 from torch.optim.adamw import AdamW
-from clearml.logger import Logger
-from torch import Tensor
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity as LPIPS
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR, LRScheduler
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity as LPIPS
 
 from gorq_ml.training.utils import log_image
 
 from src.models.discriminator import Discriminator
 from src.models.CycleHJSuperSloMo import CycleHJSuperSloMo, CycleHJOutput
+
 
 class CycleConsistencyPL(L.LightningModule):
     def __init__(
@@ -38,9 +32,9 @@ class CycleConsistencyPL(L.LightningModule):
         viz_val_indices: list[int],
         viz_train_indices: list[int],
         viz_frequency: int,
+        val_dataset: Dataset,
+        train_dataset: Dataset,
         perceptual_weight: float = 0.,
-        val_dataloader: DataLoader | None = None,
-        train_dataloader: DataLoader | None = None,
         plot_colormap: str | None = None,
         plot_per_channel: bool = False,
         lr_warmup_steps: int = 1,
@@ -56,12 +50,12 @@ class CycleConsistencyPL(L.LightningModule):
         self.viz_train_indices = viz_train_indices
         self.train_codebook_counts = 0.
         self.val_codebook_counts = 0.
-        self._val_dataloader = val_dataloader
-        self._train_dataloader = train_dataloader
+        self._val_dataset = val_dataset
+        self._train_dataset = train_dataset
         self._last_viz_tstep = -1
         self.num_steps_taken = 0
         self._last_viz_tstep = -1
-        self.save_hyperparameters(ignore=['lpips', 'train_dataloader', 'val_dataloader', '_last_viz_tstep'])
+        self.save_hyperparameters(ignore=['lpips', '_val_dataset', '_train_dataset', '_last_viz_tstep'])
 
     def _should_discriminator_be_trained(self) -> bool:
         return self.num_steps_taken > self.hparams['disc_step_start']
@@ -93,7 +87,7 @@ class CycleConsistencyPL(L.LightningModule):
                 total_iters=self.hparams['lr_warmup_steps'],
             )
         ]
-        if self.hparams['num_training_steps'] is not None and self._train_dataloader is not None:
+        if self.hparams['num_training_steps'] is not None:
             schedulers_ae.append(
                 CosineAnnealingLR(
                     optimizer=optim_ae,
@@ -106,38 +100,18 @@ class CycleConsistencyPL(L.LightningModule):
                     T_max=self.hparams['num_training_steps'],
                 )
             )
-        schedulers_ae = SequentialLR(
+        schedulers_ae_resolved = SequentialLR(
             optimizer=optim_ae,
             schedulers=schedulers_ae,
             milestones=[self.hparams['lr_warmup_steps']] if len(schedulers_ae) == 2 else []
         )
-        schedulers_disc = SequentialLR(
+        schedulers_disc_resolved = SequentialLR(
             optimizer=optim_disc,
             schedulers=schedulers_disc,
             milestones=[self.hparams['lr_warmup_steps']] if len(schedulers_disc) == 2 else []
         )
 
-        return ([optim_ae, optim_disc], [schedulers_ae, schedulers_disc]) # type: ignore
-
-    def get_discriminator_loss(
-        self,
-        real: torch.Tensor,
-        fake: torch.Tensor,
-    ) -> Tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        disc_fake_pred = self.discriminator(fake.detach())
-        disc_real_pred = self.discriminator(real)
-        disc_fake_loss = self.hparams['disc_weight'] * F.mse_loss(
-            disc_fake_pred, torch.zeros_like(disc_fake_pred)
-        )
-        disc_real_loss = self.hparams['disc_weight'] * F.mse_loss(
-            disc_real_pred, torch.ones_like(disc_real_pred)
-        )
-        disc_loss = (disc_fake_loss + disc_real_loss) / 2
-
-        return disc_loss, {
-            'disc_fake_loss': disc_fake_loss.item(),
-            'disc_real_loss': disc_real_loss.item(),
-        }
+        return ([optim_ae, optim_disc], [schedulers_ae_resolved, schedulers_disc_resolved])
 
     def get_generator_loss(self, out: CycleHJOutput) -> Tuple[torch.Tensor, dict[str, torch.Tensor]]:
         loss_dict = {}
@@ -220,7 +194,7 @@ class CycleConsistencyPL(L.LightningModule):
         if (batch_idx + 1) % self.hparams['acc_grad'] == 0:
             optim.step()
             optim.zero_grad()
-            lr_scheduler.step()
+            lr_scheduler.step() # type: ignore
             self.num_steps_taken += 1
         self.untoggle_optimizer(optim)
         self.log('gen_loss/train', loss.item(), on_step=True, on_epoch=True, prog_bar=True)
@@ -267,7 +241,7 @@ class CycleConsistencyPL(L.LightningModule):
         if (batch_idx + 1) % self.hparams['acc_grad'] == 0:
             optim.step()
             optim.zero_grad()
-            lr_scheduler.step()
+            lr_scheduler.step() # type: ignore
         self.untoggle_optimizer(optim)
 
         self.log(f'disc_loss/train', loss.item(), on_step=True, on_epoch=True)
@@ -359,8 +333,8 @@ class CycleConsistencyPL(L.LightningModule):
         self.train(is_training)
 
     def on_validation_epoch_end(self) -> None:
-        self._log_sample_images(self._val_dataloader.dataset, self.viz_val_indices, 'val')
-        self._log_sample_images(self._train_dataloader.dataset, self.viz_train_indices, 'train')
+        self._log_sample_images(self._val_dataset, self.viz_val_indices, 'val')
+        self._log_sample_images(self._train_dataset, self.viz_train_indices, 'train')
 
     def on_before_backward(self, *args, **kwargs) -> None:
         if (self.global_step % self.hparams['viz_frequency']) != 0:
@@ -369,6 +343,6 @@ class CycleConsistencyPL(L.LightningModule):
             return
         self._last_viz_tstep = self.global_step
         logger.warning('Starting visualization')
-        self._log_sample_images(self._val_dataloader.dataset, self.viz_val_indices, 'val')
-        self._log_sample_images(self._train_dataloader.dataset, self.viz_train_indices, 'train')
+        self._log_sample_images(self._val_dataset, self.viz_val_indices, 'val')
+        self._log_sample_images(self._train_dataset, self.viz_train_indices, 'train')
         logger.warning('Ended visualization')
