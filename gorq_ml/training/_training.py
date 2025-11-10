@@ -37,8 +37,8 @@ def train(
     logger.info(f'Val samples: {len(val_ds)}') # type: ignore
     model = l_module(
         **config['model'],
-        val_dataloader=dl.val_dataloader(),
-        train_dataloader=dl.train_dataloader(),
+        train_dataloader=val_ds,
+        train_dataset=train_ds,
         num_training_steps=len(dl.train_dataloader()) * config['trainer']['max_epochs'],
     )
     if compile:
