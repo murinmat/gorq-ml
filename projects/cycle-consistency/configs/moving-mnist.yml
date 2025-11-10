@@ -1,0 +1,63 @@
+task:
+  task_type: training
+  project_name: cycle-consistency
+
+
+num_interp: &num_interp
+  7
+
+callbacks:
+  LearningRateMonitor:
+    logging_interval: step
+
+checkpoint:
+  auto_insert_metric_name: false
+  dirpath: /data/modeling/checkpoints/
+  filename: loss={loss/val:.5f}_step={step}
+  monitor: gen_loss/val
+  save_last: true
+  save_top_k: 10
+  verbose: true
+
+dataloader:
+  num_workers: 16
+  batch_size: 256
+  pin_memory: True
+  persistent_workers: True
+
+dataset_kwargs:
+  num_interp: *num_interp
+  train_ratio: 0.9
+  data_root: /data/datasets/moving-mnist
+
+trainer:
+  accelerator: gpu
+  log_every_n_steps: 25
+  num_sanity_val_steps: 2
+  precision: 16-mixed
+  check_val_every_n_epoch: 1
+  devices: 1
+  max_epochs: 500
+
+model:
+  model_kwargs:
+    flow_scale: 2
+    num_interp: *num_interp
+    nc_depth: [32, 64, 128, 256]
+  discriminator_kwargs:
+    im_channels: 3
+    conv_channels: [64, 128, ]
+  model_lr: 0.0001
+  model_betas: [0.5, 0.9]
+  disc_lr: 0.0001
+  disc_betas: [0.5, 0.9]
+  disc_step_start: 5000
+  pixel_weight: 0.8
+  disc_weight: 2.
+  warp_loss_weight: 0.1
+  perceptual_weight: 0.5
+  smooth_loss_weight: 0.1
+  viz_val_indices: [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95]
+  viz_train_indices: [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95]
+  viz_frequency: 200
+  lr_warmup_steps: 1000
