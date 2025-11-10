@@ -37,7 +37,7 @@ def train(
     logger.info(f'Val samples: {len(val_ds)}') # type: ignore
     model = l_module(
         **config['model'],
-        train_dataloader=val_ds,
+        val_dataset=val_ds,
         train_dataset=train_ds,
         num_training_steps=len(dl.train_dataloader()) * config['trainer']['max_epochs'],
     )
@@ -55,7 +55,7 @@ def train(
     trainer = L.Trainer(
         **config['trainer'],
         callbacks=[callbacks.ModelCheckpoint(**config['checkpoint'])] + [
-            getattr(callbacks, k)(**v) for k, v in resolve_config.get('callbacks', {}).items() # type: ignore
+            getattr(callbacks, k)(**v) for k, v in config.get('callbacks', {}).items() # type: ignore
         ],
         strategy=strategy,
         deterministic=deterministic,
